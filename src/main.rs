@@ -1,20 +1,24 @@
 use std::thread;
+use std::sync::mpsc;
 
 fn main() {
     let n = 10;
     let numbers: Vec<i32> = (1..=n).collect();
 
-    let mut handles = vec![];
+    let (tx, rx) = mpsc::channel();
 
     for num in numbers {
-        let handle = thread::spawn(move || {
+        let tx = tx.clone();
+        thread::spawn(move || {
             let square = num * num;
-            println!("{}^2 = {}", num, square);
+            tx.send(square).unwrap();
         });
-        handles.push(handle);
     }
 
-    for handle in handles {
-        handle.join().unwrap();
+    let mut sum = 0;
+    for _ in 1..=n {
+        sum += rx.recv().unwrap();
     }
+
+    println!("Sum of squares: {}", sum);
 }
