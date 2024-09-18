@@ -1,9 +1,16 @@
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::Duration;
+use std::env;
 
 fn main() {
-    let worker_count = 4;
+    // Чтение аргумента из командной строки (количество воркеров)
+    let args: Vec<String> = env::args().collect();
+    let worker_count: usize = if args.len() > 1 {
+        args[1].parse().unwrap_or(4)
+    } else {
+        4
+    };
 
     let (tx, rx) = mpsc::channel();
 
