@@ -1,70 +1,47 @@
-use flume::unbounded;
-use tokio::time::{self, Duration};
-use tokio_util::sync::CancellationToken;
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use std::thread;
+use dashmap::DashMap;
 
-#[tokio::main]
-async fn main() {
-    let (tx, rx) = unbounded();
-    let n_seconds = 5;
-    let tx_clone = tx.clone();
-    let cancel_token = Arc::new(CancellationToken::new());
+fn main() {
+    // Способ 1: Используем Mutex + HashMap
+    let data_mutex = Arc::new(Mutex::new(HashMap::new()));
 
-    let cancel_token_clone = cancel_token.clone();
-    let sender_task = tokio::spawn(async move {
-        let mut counter = 0;
-        let timeout = time::sleep(Duration::from_secs(n_seconds));
-        tokio::pin!(timeout);
+    let mut handles = vec![];
 
-        loop {
-            tokio::select! {
-                _ = &mut timeout => {
-                    println!("Time is up, stopping sender.");
-                    break;
-                }
-                _ = time::sleep(Duration::from_millis(500)) => {
-                    counter += 1;
-                    if tx_clone.send(counter).is_err() {
-                        break;
-                    }
-                    println!("Sent: {}", counter);
-                }
-                _ = cancel_token_clone.cancelled() => {
-                    println!("Sender task cancelled.");
-                    break;
-                }
-            }
-        }
-    });
+    for i in 0..10 {
+        let data_mutex = Arc::clone(&data_mutex);
+        let handle = thread::spawn(move || {
+            let mut map = data_mutex.lock().unwrap();
+            map.insert(i, i + 100);
+            println!("{} -> {}", i, i + 100);
+        });
+        handles.push(handle);
+    }
 
-    let cancel_token_clone = cancel_token.clone();
-    let receiver_task = tokio::spawn(async move {
-        loop {
-            tokio::select! {
-                message = rx.recv_async() => {
-                    if let Ok(value) = message {
-                        println!("Received: {}", value);
-                    } else {
-                        println!("Channel closed, stopping receiver.");
-                        break;
-                    }
-                }
-                _ = cancel_token_clone.cancelled() => {
-                    println!("Receiver task cancelled.");
-                    break;
-                }
-            }
-        }
-    });
+    for handle in handles {
+        handle.join().unwrap();
+    }
 
-    time::sleep(Duration::from_secs(n_seconds)).await;
+    println!("Final Mutex + HashMap: {:?}", *data_mutex.lock().unwrap());
 
-    cancel_token.cancel();
+    // Способ 2: Используем DashMap
+    let data_dashmap = Arc::new(DashMap::new());
 
-    drop(tx);
+    let mut handles_dashmap = vec![];
 
-    sender_task.await.unwrap();
-    receiver_task.await.unwrap();
+    for i in 0..10 {
+        let data_dashmap = Arc::clone(&data_dashmap);
+        let handle = thread::spawn(move || {
+            data_dashmap.insert(i, i + 100);
+            println!("{} -> {}", i, i + 100);
+        });
+        handles_dashmap.push(handle);
+    }
 
-    println!("Program completed after {} seconds", n_seconds);
+    for handle in handles_dashmap {
+        handle.join().unwrap();
+    }
+
+    println!("Final DashMap: {:?}", data_dashmap);
 }
