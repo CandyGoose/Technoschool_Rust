@@ -1,47 +1,18 @@
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-use std::thread;
-use dashmap::DashMap;
+fn set_bit(number: i64, bit_index: u32, value: bool) -> i64 {
+    if value {
+        number | (1 << bit_index)
+    } else {
+        number & !(1 << bit_index)
+    }
+}
 
 fn main() {
-    // Способ 1: Используем Mutex + HashMap
-    let data_mutex = Arc::new(Mutex::new(HashMap::new()));
+    let number: i64 = 0b1010; // Исходное число
+    let bit_index: u32 = 2;
 
-    let mut handles = vec![];
+    let updated_number = set_bit(number, bit_index, true);
+    println!("After setting bit {}: {:b}", bit_index, updated_number);
 
-    for i in 0..10 {
-        let data_mutex = Arc::clone(&data_mutex);
-        let handle = thread::spawn(move || {
-            let mut map = data_mutex.lock().unwrap();
-            map.insert(i, i + 100);
-            println!("{} -> {}", i, i + 100);
-        });
-        handles.push(handle);
-    }
-
-    for handle in handles {
-        handle.join().unwrap();
-    }
-
-    println!("Final Mutex + HashMap: {:?}", *data_mutex.lock().unwrap());
-
-    // Способ 2: Используем DashMap
-    let data_dashmap = Arc::new(DashMap::new());
-
-    let mut handles_dashmap = vec![];
-
-    for i in 0..10 {
-        let data_dashmap = Arc::clone(&data_dashmap);
-        let handle = thread::spawn(move || {
-            data_dashmap.insert(i, i + 100);
-            println!("{} -> {}", i, i + 100);
-        });
-        handles_dashmap.push(handle);
-    }
-
-    for handle in handles_dashmap {
-        handle.join().unwrap();
-    }
-
-    println!("Final DashMap: {:?}", data_dashmap);
+    let updated_number = set_bit(updated_number, bit_index, false);
+    println!("After clearing bit {}: {:b}", bit_index, updated_number);
 }
