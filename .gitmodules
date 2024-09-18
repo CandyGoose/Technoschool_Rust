@@ -1,0 +1,3 @@
+[submodule "Order_service"]
+	path = Order_service
+	url = https://github.com/CandyGoose/Order_service
