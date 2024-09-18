@@ -1,18 +1,34 @@
-fn set_bit(number: i64, bit_index: u32, value: bool) -> i64 {
-    if value {
-        number | (1 << bit_index)
-    } else {
-        number & !(1 << bit_index)
-    }
-}
+use tokio::sync::mpsc;
+use tokio::time::{self, Duration};
+use tokio::task;
 
-fn main() {
-    let number: i64 = 0b1010; // Исходное число
-    let bit_index: u32 = 2;
+#[tokio::main]
+async fn main() {
+    let n = 10;
+    let (tx1, mut rx1) = mpsc::channel(10); 
+    let (tx2, mut rx2) = mpsc::channel(10);
 
-    let updated_number = set_bit(number, bit_index, true);
-    println!("After setting bit {}: {:b}", bit_index, updated_number);
+    let producer = task::spawn(async move {
+        for i in 1..=n {
+            tx1.send(i).await.unwrap();
+            time::sleep(Duration::from_millis(500)).await;
+        }
+    });
 
-    let updated_number = set_bit(updated_number, bit_index, false);
-    println!("After clearing bit {}: {:b}", bit_index, updated_number);
+    let processor = task::spawn(async move {
+        while let Some(num) = rx1.recv().await {
+            let square = num * num;
+            tx2.send(square).await.unwrap();
+        }
+    });
+
+    let consumer = task::spawn(async move {
+        while let Some(square) = rx2.recv().await {
+            println!("Squared value: {}", square);
+        }
+    });
+
+    producer.await.unwrap();
+    processor.await.unwrap();
+    consumer.await.unwrap();
 }
