@@ -1,34 +1,26 @@
-use tokio::sync::mpsc;
-use tokio::time::{self, Duration};
-use tokio::task;
+use std::collections::HashMap;
 
-#[tokio::main]
-async fn main() {
-    let n = 10;
-    let (tx1, mut rx1) = mpsc::channel(10); 
-    let (tx2, mut rx2) = mpsc::channel(10);
+fn group_temperatures(temps: Vec<f64>) -> HashMap<i32, Vec<f64>> {
+    let mut grouped_temps: HashMap<i32, Vec<f64>> = HashMap::new();
 
-    let producer = task::spawn(async move {
-        for i in 1..=n {
-            tx1.send(i).await.unwrap();
-            time::sleep(Duration::from_millis(500)).await;
-        }
-    });
+    for &temp in temps.iter() {
+        let lower_bound = (temp / 10.0).floor() as i32 * 10;
+        grouped_temps.entry(lower_bound).or_insert(Vec::new()).push(temp);
+    }
 
-    let processor = task::spawn(async move {
-        while let Some(num) = rx1.recv().await {
-            let square = num * num;
-            tx2.send(square).await.unwrap();
-        }
-    });
+    for temps in grouped_temps.values_mut() {
+        temps.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    }
 
-    let consumer = task::spawn(async move {
-        while let Some(square) = rx2.recv().await {
-            println!("Squared value: {}", square);
-        }
-    });
+    grouped_temps
+}
 
-    producer.await.unwrap();
-    processor.await.unwrap();
-    consumer.await.unwrap();
+fn main() {
+    let temperatures = vec![-25.4, -27.0, 13.0, 19.0, 15.5, 24.5, -21.0, 32.5];
+
+    let result = group_temperatures(temperatures);
+
+    for (interval, temps) in result.iter() {
+        println!("[{}, {}): {:?}", interval, interval + 10, temps);
+    }
 }
