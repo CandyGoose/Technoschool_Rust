@@ -1,42 +1,61 @@
-use std::sync::{mpsc, Arc, Mutex};
-use std::thread;
+use flume::{Receiver};
 use std::time::Duration;
+use tokio::signal;
+use tokio::time;
 
-fn main() {
+#[tokio::main]
+async fn main() {
+    let (tx, rx) = flume::unbounded();
+
     let worker_count = 4;
 
-    let (tx, rx) = mpsc::channel();
+    let mut worker_tasks = vec![];
+    for i in 0..worker_count {
+        let rx = rx.clone();
+        let worker_id = i + 1;
+        let worker_task = tokio::spawn(worker(rx, worker_id));
+        worker_tasks.push(worker_task);
+    }
 
-    let rx = Arc::new(Mutex::new(rx));
-
-    thread::spawn(move || {
+    let tx_task = tokio::spawn(async move {
         let mut counter = 0;
         loop {
-            counter += 1;
-            tx.send(format!("Message {}", counter)).unwrap();
-            thread::sleep(Duration::from_millis(500));
+            tokio::select! {
+                _ = signal::ctrl_c() => {
+                    println!("Ctrl+C detected, shutting down...");
+                    break;
+                }
+                _ = time::sleep(Duration::from_millis(500)) => {
+                    counter += 1;
+                    if tx.send(Some(format!("Message {}", counter))).is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+
+        for _ in 0..worker_count {
+            let _ = tx.send(None);
         }
     });
 
-    let mut workers = vec![];
-    for i in 0..worker_count {
-        let rx = Arc::clone(&rx);
-        let worker_id = i + 1;
-        let handle = thread::spawn(move || {
-            loop {
-                let message = rx.lock().unwrap().recv();
-                match message {
-                    Ok(message) => {
-                        println!("Worker {} received: {}", worker_id, message);
-                    }
-                    Err(_) => break,
-                }
-            }
-        });
-        workers.push(handle);
+    tx_task.await.unwrap();
+
+    for task in worker_tasks {
+        task.await.unwrap();
     }
 
-    for worker in workers {
-        worker.join().unwrap();
+    println!("All workers have shut down.");
+}
+
+async fn worker(rx: Receiver<Option<String>>, worker_id: usize) {
+    while let Ok(message) = rx.recv_async().await {
+        match message {
+            Some(msg) => println!("Worker {} received: {}", worker_id, msg),
+            None => {
+                println!("Worker {} shutting down.", worker_id);
+                break;
+            }
+        }
     }
 }
