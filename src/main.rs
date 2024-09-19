@@ -1,35 +1,25 @@
-use std::f64;
+use std::collections::HashSet;
 
-struct Point {
-    x: f64,
-    y: f64,
-}
+fn all_unique_characters(input: &str) -> bool {
+    let mut seen = HashSet::new();
 
-impl Point {
-    pub fn new(x: f64, y: f64) -> Point {
-        Point { x, y }
+    for ch in input.chars() {
+        let lower_ch = ch.to_lowercase().next().unwrap();
+        if seen.contains(&lower_ch) {
+            return false;
+        }
+        seen.insert(lower_ch);
     }
 
-    pub fn get_x(&self) -> f64 {
-        self.x
-    }
-
-    pub fn get_y(&self) -> f64 {
-        self.y
-    }
-
-    pub fn distance(&self, other: &Point) -> f64 {
-        let dx = self.x - other.get_x();
-        let dy = self.y - other.get_y();
-        (dx.powi(2) + dy.powi(2)).sqrt()
-    }
+    true
 }
 
 fn main() {
-    let point1 = Point::new(3.0, 4.0);
-    let point2 = Point::new(7.0, 1.0);
+    let input1 = "abcd";
+    let input2 = "abCdefA";
+    let input3 = "aabcd";
 
-    let distance = point1.distance(&point2);
-
-    println!("The distance between the two points is: {:.2}", distance);
+    println!("{} — {}", input1, all_unique_characters(input1));
+    println!("{} — {}", input2, all_unique_characters(input2));
+    println!("{} — {}", input3, all_unique_characters(input3));
 }
