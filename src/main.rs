@@ -1,30 +1,33 @@
-fn quicksort(arr: &mut [i32]) {
-    if arr.len() <= 1 {
-        return;
-    }
+fn binary_search(arr: &[i32], target: i32) -> Option<usize> {
+    let mut left = 0;
+    let mut right = arr.len();
 
-    let pivot_index = partition(arr);
-    quicksort(&mut arr[0..pivot_index]);
-    quicksort(&mut arr[pivot_index + 1..]);
-}
+    while left < right {
+        let mid = left + (right - left) / 2;
 
-fn partition(arr: &mut [i32]) -> usize {
-    let pivot = arr[arr.len() - 1];
-    let mut i = 0;
-
-    for j in 0..arr.len() - 1 {
-        if arr[j] < pivot {
-            arr.swap(i, j);
-            i += 1;
+        if arr[mid] == target {
+            return Some(mid);
+        } else if arr[mid] < target {
+            left = mid + 1;
+        } else {
+            right = mid;
         }
     }
-    arr.swap(i, arr.len() - 1);
-    i
+
+    None
 }
 
 fn main() {
-    let mut array = [134, 37, 223, 312, 15, 642, 3];
-    println!("Before sorting: {:?}", array);
-    quicksort(&mut array);
-    println!("After sorting: {:?}", array);
+    let mut array = [334, 7, 23, 32, 512, 62, 342];
+
+    array.sort();
+
+    println!("Sorted array: {:?}", array);
+
+    let target = 32;
+
+    match binary_search(&array, target) {
+        Some(index) => println!("Found {} at index {}", target, index),
+        None => println!("{} not found in the array", target),
+    }
 }
