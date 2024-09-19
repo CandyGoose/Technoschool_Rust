@@ -1,10 +1,9 @@
-fn reverse_string(input: &str) -> String {
-    input.chars().rev().collect()
+fn reverse_words(input: &str) -> String {
+    input.split_whitespace().rev().collect::<Vec<&str>>().join(" ")
 }
 
 fn main() {
-    let input = "главрыба";
-    let reversed = reverse_string(input);
-    println!("Original: {}", input);
-    println!("Reversed: {}", reversed);
+    let input = "snow dog sun";
+    let reversed = reverse_words(input);
+    println!("{} — {}", input, reversed);
 }
