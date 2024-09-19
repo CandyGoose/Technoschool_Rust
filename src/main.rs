@@ -1,33 +1,46 @@
-fn binary_search(arr: &[i32], target: i32) -> Option<usize> {
-    let mut left = 0;
-    let mut right = arr.len();
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::thread;
 
-    while left < right {
-        let mid = left + (right - left) / 2;
+struct Counter {
+    value: AtomicUsize,
+}
 
-        if arr[mid] == target {
-            return Some(mid);
-        } else if arr[mid] < target {
-            left = mid + 1;
-        } else {
-            right = mid;
+impl Counter {
+    fn new() -> Self {
+        Counter {
+            value: AtomicUsize::new(0),
         }
     }
 
-    None
+    fn increment(&self) {
+        self.value.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn get_value(&self) -> usize {
+        self.value.load(Ordering::SeqCst)
+    }
 }
 
 fn main() {
-    let mut array = [334, 7, 23, 32, 512, 62, 342];
+    let counter = Arc::new(Counter::new());
 
-    array.sort();
+    let mut handles = vec![];
 
-    println!("Sorted array: {:?}", array);
-
-    let target = 32;
-
-    match binary_search(&array, target) {
-        Some(index) => println!("Found {} at index {}", target, index),
-        None => println!("{} not found in the array", target),
+    // Создаем потоки
+    for _ in 0..10 {
+        let counter = Arc::clone(&counter);
+        let handle = thread::spawn(move || {
+            for _ in 0..1000 {
+                counter.increment();
+            }
+        });
+        handles.push(handle);
     }
+
+    for handle in handles {
+        handle.join().unwrap();
+    }
+
+    println!("Final counter value: {}", counter.get_value());
 }
