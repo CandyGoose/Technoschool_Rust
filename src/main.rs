@@ -1,12 +1,35 @@
-fn main() {
-    let mut vec = vec![1, 2, 3, 4, 5];
-    let index = 3;
+use std::f64;
 
-    if index < vec.len() {
-        let removed_element = vec.remove(index);
-        println!("Removed element: {}", removed_element);
-        println!("Updated vector: {:?}", vec);
-    } else {
-        println!("Index out of bounds!");
+struct Point {
+    x: f64,
+    y: f64,
+}
+
+impl Point {
+    pub fn new(x: f64, y: f64) -> Point {
+        Point { x, y }
     }
+
+    pub fn get_x(&self) -> f64 {
+        self.x
+    }
+
+    pub fn get_y(&self) -> f64 {
+        self.y
+    }
+
+    pub fn distance(&self, other: &Point) -> f64 {
+        let dx = self.x - other.get_x();
+        let dy = self.y - other.get_y();
+        (dx.powi(2) + dy.powi(2)).sqrt()
+    }
+}
+
+fn main() {
+    let point1 = Point::new(3.0, 4.0);
+    let point2 = Point::new(7.0, 1.0);
+
+    let distance = point1.distance(&point2);
+
+    println!("The distance between the two points is: {:.2}", distance);
 }
