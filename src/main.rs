@@ -1,141 +1,72 @@
 use std::env;
-use std::fs::File;
-use std::io::{BufRead, BufReader};
-use std::process;
+use std::io::{self, BufRead};
 
 #[derive(Debug)]
-struct GrepConfig {
-    after: usize,
-    before: usize,
-    context: usize,
-    count: bool,
-    ignore_case: bool,
-    invert: bool,
-    fixed: bool,
-    line_num: bool,
-    pattern: String,
+struct CutConfig {
+    fields: Vec<usize>,
+    delimiter: char,
+    only_separated: bool,
 }
 
-impl GrepConfig {
-    fn new(args: &[String]) -> GrepConfig {
-        let mut config = GrepConfig {
-            after: 0,
-            before: 0,
-            context: 0,
-            count: false,
-            ignore_case: false,
-            invert: false,
-            fixed: false,
-            line_num: false,
-            pattern: String::new(),
+impl CutConfig {
+    fn new(args: &[String]) -> CutConfig {
+        let mut config = CutConfig {
+            fields: vec![],
+            delimiter: '\t',
+            only_separated: false,
         };
 
         let mut i = 1;
         while i < args.len() {
             match args[i].as_str() {
-                "-A" => {
+                "-f" => {
                     i += 1;
-                    config.after = args[i].parse().unwrap_or(0);
+                    config.fields = args[i]
+                        .split(',')
+                        .filter_map(|s| s.parse::<usize>().ok())
+                        .collect();
                 }
-                "-B" => {
+                "-d" => {
                     i += 1;
-                    config.before = args[i].parse().unwrap_or(0);
+                    config.delimiter = args[i].chars().next().unwrap_or('\t');
                 }
-                "-C" => {
-                    i += 1;
-                    config.context = args[i].parse().unwrap_or(0);
-                }
-                "-c" => config.count = true,
-                "-i" => config.ignore_case = true,
-                "-v" => config.invert = true,
-                "-F" => config.fixed = true,
-                "-n" => config.line_num = true,
-                _ => {
-                    if config.pattern.is_empty() {
-                        config.pattern = args[i].clone();
-                    }
-                }
+                "-s" => config.only_separated = true,
+                _ => {}
             }
             i += 1;
-        }
-
-        if config.context > 0 {
-            config.after = config.context;
-            config.before = config.context;
         }
 
         config
     }
 }
 
-fn grep(config: GrepConfig, reader: impl BufRead) {
-    let pattern = if config.ignore_case {
-        config.pattern.to_lowercase()
-    } else {
-        config.pattern.clone()
-    };
-
-    let mut matches = vec![];
-    let mut lines: Vec<String> = vec![];
-    let mut count = 0;
-
-    for (index, line) in reader.lines().enumerate() {
+fn cut(config: CutConfig, reader: impl BufRead) {
+    for line in reader.lines() {
         let line = line.unwrap();
-        let line_lowercase = if config.ignore_case {
-            line.to_lowercase()
-        } else {
-            line.clone()
-        };
+        let columns: Vec<&str> = line.split(config.delimiter).collect();
 
-        let matched = if config.fixed {
-            line_lowercase == pattern
-        } else {
-            line_lowercase.contains(&pattern)
-        };
-
-        let matched = if config.invert { !matched } else { matched };
-
-        if matched {
-            count += 1;
-            matches.push(index);
+        if config.only_separated && columns.len() < 2 {
+            continue;
         }
 
-        lines.push(line);
-    }
-
-    if config.count {
-        println!("{}", count);
-        return;
-    }
-
-    for &match_index in &matches {
-        let start = if match_index >= config.before {
-            match_index - config.before
-        } else {
-            0
-        };
-        let end = std::cmp::min(match_index + config.after + 1, lines.len());
-
-        for i in start..end {
-            if config.line_num {
-                print!("{}:", i + 1);
+        let mut selected_fields = vec![];
+        for &field_index in &config.fields {
+            if let Some(column) = columns.get(field_index - 1) {
+                selected_fields.push(column.to_string());
             }
-            println!("{}", lines[i]);
+        }
+
+        if !selected_fields.is_empty() {
+            println!("{}", selected_fields.join(&config.delimiter.to_string()));
         }
     }
 }
 
 fn main() {
     let args: Vec<String> = env::args().collect();
+    let config = CutConfig::new(&args);
 
-    if args.len() < 3 {
-        eprintln!("Usage: {} <pattern> <file> [options]", args[0]);
-        process::exit(1);
-    }
-
-    let config = GrepConfig::new(&args);
-    let file = File::open(&args[2]).expect("Could not open file");
-    let reader = BufReader::new(file);
-
-    grep(config, reader);
+    let stdin = io::stdin();
+    let reader = stdin.lock();
+    cut(config, reader);
 }
