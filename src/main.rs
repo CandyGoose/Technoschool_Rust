@@ -1,48 +1,141 @@
-use std::collections::HashMap;
+use std::env;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+use std::process;
 
-fn find_anagrams(words: &[String]) -> HashMap<String, Vec<String>> {
-    let mut anagram_map: HashMap<String, Vec<String>> = HashMap::new();
+#[derive(Debug)]
+struct GrepConfig {
+    after: usize,
+    before: usize,
+    context: usize,
+    count: bool,
+    ignore_case: bool,
+    invert: bool,
+    fixed: bool,
+    line_num: bool,
+    pattern: String,
+}
 
-    for word in words {
-        let lower_word = word.to_lowercase();
+impl GrepConfig {
+    fn new(args: &[String]) -> GrepConfig {
+        let mut config = GrepConfig {
+            after: 0,
+            before: 0,
+            context: 0,
+            count: false,
+            ignore_case: false,
+            invert: false,
+            fixed: false,
+            line_num: false,
+            pattern: String::new(),
+        };
 
-        let mut sorted_chars: Vec<char> = lower_word.chars().collect();
-        sorted_chars.sort_unstable();
-        let sorted_word = sorted_chars.into_iter().collect::<String>();
+        let mut i = 1;
+        while i < args.len() {
+            match args[i].as_str() {
+                "-A" => {
+                    i += 1;
+                    config.after = args[i].parse().unwrap_or(0);
+                }
+                "-B" => {
+                    i += 1;
+                    config.before = args[i].parse().unwrap_or(0);
+                }
+                "-C" => {
+                    i += 1;
+                    config.context = args[i].parse().unwrap_or(0);
+                }
+                "-c" => config.count = true,
+                "-i" => config.ignore_case = true,
+                "-v" => config.invert = true,
+                "-F" => config.fixed = true,
+                "-n" => config.line_num = true,
+                _ => {
+                    if config.pattern.is_empty() {
+                        config.pattern = args[i].clone();
+                    }
+                }
+            }
+            i += 1;
+        }
 
-        anagram_map.entry(sorted_word)
-            .or_insert_with(Vec::new)
-            .push(lower_word.clone());
+        if config.context > 0 {
+            config.after = config.context;
+            config.before = config.context;
+        }
+
+        config
+    }
+}
+
+fn grep(config: GrepConfig, reader: impl BufRead) {
+    let pattern = if config.ignore_case {
+        config.pattern.to_lowercase()
+    } else {
+        config.pattern.clone()
+    };
+
+    let mut matches = vec![];
+    let mut lines: Vec<String> = vec![];
+    let mut count = 0;
+
+    for (index, line) in reader.lines().enumerate() {
+        let line = line.unwrap();
+        let line_lowercase = if config.ignore_case {
+            line.to_lowercase()
+        } else {
+            line.clone()
+        };
+
+        let matched = if config.fixed {
+            line_lowercase == pattern
+        } else {
+            line_lowercase.contains(&pattern)
+        };
+
+        let matched = if config.invert { !matched } else { matched };
+
+        if matched {
+            count += 1;
+            matches.push(index);
+        }
+
+        lines.push(line);
     }
 
-    let mut result: HashMap<String, Vec<String>> = HashMap::new();
-    for (_, mut anagrams) in anagram_map {
-        if anagrams.len() > 1 {
-            anagrams.sort();
-            let first_word = anagrams[0].clone();
-            result.insert(first_word, anagrams);
+    if config.count {
+        println!("{}", count);
+        return;
+    }
+
+    for &match_index in &matches {
+        let start = if match_index >= config.before {
+            match_index - config.before
+        } else {
+            0
+        };
+        let end = std::cmp::min(match_index + config.after + 1, lines.len());
+
+        for i in start..end {
+            if config.line_num {
+                print!("{}:", i + 1);
+            }
+            println!("{}", lines[i]);
         }
     }
-
-    result
 }
 
 fn main() {
-    let words = vec![
-        "пятак".to_string(),
-        "пятка".to_string(),
-        "слиток".to_string(),
-        "столик".to_string(),
-        "кот".to_string(),
-        "ток".to_string(),
-        "окт".to_string(),
-        "тяпка".to_string(),
-        "листок".to_string(),
-    ];
+    let args: Vec<String> = env::args().collect();
 
-    let anagrams = find_anagrams(&words);
-
-    for (key, anagram_set) in &anagrams {
-        println!("{}: {:?}", key, anagram_set);
+    if args.len() < 3 {
+        eprintln!("Usage: {} <pattern> <file> [options]", args[0]);
+        process::exit(1);
     }
+
+    let config = GrepConfig::new(&args);
+    let file = File::open(&args[2]).expect("Could not open file");
+    let reader = BufReader::new(file);
+
+    grep(config, reader);
 }
