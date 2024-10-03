@@ -1,152 +1,123 @@
-use reqwest::blocking::Client;
-use select::document::Document;
-use select::predicate::Name;
-use std::collections::HashSet;
-use std::fs;
-use std::path::Path;
-use std::time::Duration;
-use url::{Url, ParseError};
 use clap::{Arg, Command};
+use std::io::{self, BufRead, BufReader, Write};
+use std::net::{TcpStream, ToSocketAddrs};
+use std::time::Duration;
 
-fn main() {
-    let matches = Command::new("rust-wget")
-        .arg(Arg::new("url")
-            .short('u')
-            .long("url")
-            .value_name("URL")
-            .help("Specifies the root URL to download")
-            .required(true))
-        .arg(Arg::new("output")
-            .short('o')
-            .long("output")
-            .value_name("DIRECTORY")
-            .help("Specifies the directory where to save the downloaded content")
-            .required(true))
+fn main() -> io::Result<()> {
+    let matches = Command::new("telnet")
+        .version("1.0")
+        .about("Simple Telnet client")
+        .arg(Arg::new("host")
+            .help("The host to connect to")
+            .required(true)
+            .index(1))
+        .arg(Arg::new("port")
+            .help("The port to connect to")
+            .required(true)
+            .index(2))
+        .arg(Arg::new("timeout")
+            .long("timeout")
+            .help("Connection timeout duration (default is 10s)")
+            .default_value("10s"))
         .get_matches();
 
-    let root_url = matches.get_one::<String>("url").unwrap();
-    let output_dir = matches.get_one::<String>("output").unwrap();
+    let host = matches.get_one::<String>("host").unwrap();
+    let port = matches.get_one::<String>("port").unwrap();
 
+    let timeout_str = matches.get_one::<String>("timeout").unwrap();
+    let timeout_duration = parse_timeout(timeout_str).unwrap_or(Duration::from_secs(10));
 
-    let mut visited_urls = HashSet::new();
-
-    if let Err(e) = download_site(root_url, output_dir, &mut visited_urls) {
-        eprintln!("Error downloading site: {}", e);
-    } else {
-        println!("Site downloaded successfully!");
-    }
-}
-
-fn download_site(root_url: &str, output_dir: &str, visited_urls: &mut HashSet<String>) -> Result<(), Box<dyn std::error::Error>> {
-    let client = Client::builder()
-        .timeout(Duration::from_secs(30))
-        .build()?;
-
-    download_page(&client, root_url, output_dir, visited_urls)?;
-
-    Ok(())
-}
-
-fn download_page(client: &Client, url: &str, output_dir: &str, visited_urls: &mut HashSet<String>) -> Result<(), Box<dyn std::error::Error>> {
-    if visited_urls.contains(url) {
+    let address = format!("{}:{}", host, port);
+    let socket_addrs = address.to_socket_addrs()?.collect::<Vec<_>>();
+    if socket_addrs.is_empty() {
+        eprintln!("Invalid host or port: {}", address);
         return Ok(());
     }
 
-    visited_urls.insert(url.to_string());
+    let stream = match TcpStream::connect_timeout(&socket_addrs[0], timeout_duration) {
+        Ok(stream) => {
+            println!("Connected to {}", address);
+            stream
+        }
+        Err(e) => {
+            eprintln!("Failed to connect to {}: {}", address, e);
+            return Ok(());
+        }
+    };
 
-    // Загружаем страницу
-    println!("Downloading: {}", url);
-    let response = client.get(url).send()?;
+    stream.set_read_timeout(Some(timeout_duration))?;
+    stream.set_write_timeout(Some(timeout_duration))?;
 
-    let content_type = response
-        .headers()
-        .get(reqwest::header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or("");
+    let stream_clone = stream.try_clone()?;
+    let mut reader = BufReader::new(stream_clone);
 
-    if content_type.contains("text/html") {
-        let html_text = response.text()?;
-        let document = Document::from(html_text.as_str());
-
-        let parsed_url = Url::parse(url)?;
-        let local_path = url_to_local_path(&parsed_url, output_dir)?;
-        save_file(&local_path, html_text.as_bytes())?;
-
-        for node in document.find(Name("a")).filter_map(|n| n.attr("href")) {
-            if let Ok(new_url) = resolve_url(&parsed_url, node) {
-                download_page(client, new_url.as_str(), output_dir, visited_urls)?;
+    let handle = std::thread::spawn(move || {
+        let mut buffer = String::new();
+        loop {
+            buffer.clear();
+            match reader.read_line(&mut buffer) {
+                Ok(0) => {
+                    println!("Connection closed by server.");
+                    break;
+                }
+                Ok(_) => {
+                    print!("{}", buffer);
+                    io::stdout().flush().unwrap();
+                }
+                Err(e) => {
+                    eprintln!("Error reading from server: {}", e);
+                    break;
+                }
             }
         }
+    });
 
-        for node in document.find(Name("img")).filter_map(|n| n.attr("src")) {
-            if let Ok(new_url) = resolve_url(&parsed_url, node) {
-                download_resource(client, new_url.as_str(), output_dir, visited_urls)?;
+    let mut stdin = io::stdin().lock();
+    let mut stdout = io::stdout();
+    let mut input = String::new();
+    let mut stream_writer = &stream;
+
+    loop {
+        input.clear();
+        print!("> ");
+        stdout.flush()?;
+
+        match stdin.read_line(&mut input) {
+            Ok(0) => {
+                println!("EOF received, closing connection.");
+                break;
+            }
+            Ok(_) => {
+                // Отправляем данные в сокет
+                if let Err(e) = stream_writer.write_all(input.as_bytes()) {
+                    eprintln!("Error sending data to server: {}", e);
+                    break;
+                }
+            }
+            Err(e) => {
+                eprintln!("Error reading from stdin: {}", e);
+                break;
             }
         }
-
-        for node in document.find(Name("link")).filter_map(|n| n.attr("href")) {
-            if let Ok(new_url) = resolve_url(&parsed_url, node) {
-                download_resource(client, new_url.as_str(), output_dir, visited_urls)?;
-            }
-        }
-
-        for node in document.find(Name("script")).filter_map(|n| n.attr("src")) {
-            if let Ok(new_url) = resolve_url(&parsed_url, node) {
-                download_resource(client, new_url.as_str(), output_dir, visited_urls)?;
-            }
-        }
-    } else {
-        download_resource(client, url, output_dir, visited_urls)?;
     }
+
+    drop(stream);
+
+    handle.join().unwrap();
 
     Ok(())
 }
 
-fn download_resource(client: &Client, url: &str, output_dir: &str, visited_urls: &mut HashSet<String>) -> Result<(), Box<dyn std::error::Error>> {
-    if visited_urls.contains(url) {
-        return Ok(());
+fn parse_timeout(timeout_str: &str) -> Option<Duration> {
+    if let Some(seconds) = timeout_str.strip_suffix("s") {
+        if let Ok(secs) = seconds.parse::<u64>() {
+            return Some(Duration::from_secs(secs));
+        }
     }
-
-    visited_urls.insert(url.to_string());
-
-    println!("Downloading resource: {}", url);
-    let response = client.get(url).send()?.bytes()?;
-
-    let parsed_url = Url::parse(url)?;
-    let local_path = url_to_local_path(&parsed_url, output_dir)?;
-    save_file(&local_path, &response)?;
-
-    Ok(())
-}
-
-fn url_to_local_path(url: &Url, output_dir: &str) -> Result<std::path::PathBuf, ParseError> {
-    let mut path = Path::new(output_dir).join(url.host_str().unwrap_or("unknown"));
-
-    for segment in url.path_segments().map(|c| c.collect::<Vec<_>>()).unwrap_or_else(Vec::new) {
-        path = path.join(segment);
+    if let Some(minutes) = timeout_str.strip_suffix("m") {
+        if let Ok(mins) = minutes.parse::<u64>() {
+            return Some(Duration::from_secs(mins * 60));
+        }
     }
-
-    if path.extension().is_none() {
-        path = path.with_extension("html");
-    }
-
-    Ok(path)
-}
-
-fn save_file(path: &Path, content: &[u8]) -> Result<(), std::io::Error> {
-    if path.exists() {
-        println!("File already exists, skipping: {:?}", path);
-        return Ok(());
-    }
-
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-
-    fs::write(path, content)?;
-    Ok(())
-}
-
-fn resolve_url(base_url: &Url, href: &str) -> Result<Url, ParseError> {
-    base_url.join(href)
+    None
 }
