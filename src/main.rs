@@ -1,98 +1,158 @@
 use std::env;
-use std::fs;
-use std::sync::{Arc, Mutex};
-use std::thread;
-use std::time::Instant;
-use serde_json::json;
-use std::collections::HashMap;
-
-fn count_letters(text: &str, start: usize, end: usize) -> HashMap<char, usize> {
-    let mut frequency: HashMap<char, usize> = HashMap::new();
-
-    for c in text.chars().skip(start).take(end - start) {
-        let lower_c = c.to_ascii_lowercase();
-        if lower_c.is_ascii_alphabetic() {
-            *frequency.entry(lower_c).or_insert(0) += 1;
-        }
-    }
-
-    frequency
-}
-
-fn merge_maps(a: &mut HashMap<char, usize>, b: &HashMap<char, usize>) {
-    for (key, value) in b {
-        *a.entry(*key).or_insert(0) += value;
-    }
-}
+use std::io::{self, Write, Read};
+use std::process::{Command, Stdio};
+use sysinfo::{Pid, ProcessExt, System, SystemExt};
+use std::process::exit;
 
 fn main() {
-    let args: Vec<String> = env::args().collect();
+    loop {
+        print!("rust-shell> ");
+        io::stdout().flush().unwrap();
 
-    if args.len() < 2 {
-        eprintln!("Usage: {} [-t num_threads] <file>", args[0]);
-        return;
-    }
+        let mut input = String::new();
+        io::stdin().read_line(&mut input).unwrap();
 
-    let mut num_threads = 1;
-    let mut file_name = String::new();
+        let input = input.trim();
+        if input.is_empty() {
+            continue;
+        }
 
-    let mut i = 1;
-    while i < args.len() {
-        match args[i].as_str() {
-            "-t" => {
-                i += 1;
-                num_threads = args[i].parse().unwrap_or(1);
+        let commands: Vec<&str> = input.split('|').map(str::trim).collect();
+        if commands.len() > 1 {
+            if let Err(e) = handle_pipeline(commands) {
+                eprintln!("Error executing pipeline: {}", e);
+            }
+            continue;
+        }
+
+        let mut parts = input.split_whitespace();
+        let command = match parts.next() {
+            Some(cmd) => cmd,
+            None => continue,
+        };
+        let args: Vec<&str> = parts.collect();
+
+        match command {
+            "cd" => {
+                if args.len() != 1 {
+                    eprintln!("Usage: cd <directory>");
+                } else {
+                    let path = args[0];
+                    if let Err(e) = env::set_current_dir(path) {
+                        eprintln!("cd: {}", e);
+                    }
+                }
+            }
+            "pwd" => {
+                match env::current_dir() {
+                    Ok(path) => println!("{}", path.display()),
+                    Err(e) => eprintln!("pwd: {}", e),
+                }
+            }
+            "echo" => {
+                println!("{}", args.join(" "));
+            }
+            "ps" => {
+                match ps_command() {
+                    Ok(_) => {}
+                    Err(e) => eprintln!("ps: {}", e),
+                }
+            }
+            "kill" => {
+                if args.len() != 1 {
+                    eprintln!("Usage: kill <pid>");
+                } else if let Ok(pid) = args[0].parse::<i32>() {
+                    match kill_process(pid) {
+                        Ok(_) => println!("Process {} killed", pid),
+                        Err(e) => eprintln!("kill: {}", e),
+                    }
+                } else {
+                    eprintln!("kill: Invalid PID");
+                }
+            }
+            "exit" | "\\quit" => {
+                println!("Exiting...");
+                exit(0);
             }
             _ => {
-                file_name = args[i].clone();
+                if let Err(e) = execute_external_command(command, &args) {
+                    eprintln!("Error executing command: {}", e);
+                }
             }
         }
-        i += 1;
     }
+}
 
-    let text = fs::read_to_string(&file_name).expect("Unable to read file");
+fn execute_external_command(command: &str, args: &[&str]) -> io::Result<()> {
+    let mut child = Command::new(command)
+        .args(args)
+        .spawn()?;
 
-    let start_time = Instant::now();
+    child.wait()?;
+    Ok(())
+}
 
-    let text_len = text.len();
-    let chunk_size = text_len / num_threads;
+fn handle_pipeline(commands: Vec<&str>) -> io::Result<()> {
+    let mut previous_command = None;
 
-    let frequency_map = Arc::new(Mutex::new(HashMap::new()));
+    for (i, command) in commands.iter().enumerate() {
+        let mut parts = command.split_whitespace();
+        let cmd = parts.next().unwrap();
+        let args: Vec<&str> = parts.collect();
 
-    let mut handles = vec![];
-
-    for i in 0..num_threads {
-        let start = i * chunk_size;
-        let end = if i == num_threads - 1 {
-            text_len
+        let stdin = if let Some(output) = previous_command {
+            Stdio::from(output)
         } else {
-            (i + 1) * chunk_size
+            Stdio::inherit()
         };
 
-        let text_chunk = text.clone();
-        let frequency_map_clone = Arc::clone(&frequency_map);
+        let stdout = if i == commands.len() - 1 {
+            Stdio::inherit()
+        } else {
+            Stdio::piped()
+        };
 
-        let handle = thread::spawn(move || {
-            let local_freq = count_letters(&text_chunk, start, end);
-            let mut freq_map = frequency_map_clone.lock().unwrap();
-            merge_maps(&mut freq_map, &local_freq);
-        });
+        let mut child = Command::new(cmd)
+            .args(&args)
+            .stdin(stdin)
+            .stdout(stdout)
+            .spawn()?;
 
-        handles.push(handle);
+        previous_command = child.stdout.take();
     }
 
-    for handle in handles {
-        handle.join().unwrap();
+    if let Some(mut final_output) = previous_command {
+        io::copy(&mut final_output, &mut io::stdout())?;
     }
 
-    let elapsed_time = start_time.elapsed();
+    Ok(())
+}
 
-    let freq_map = frequency_map.lock().unwrap();
+fn ps_command() -> io::Result<()> {
+    let mut system = System::new_all();
+    system.refresh_all();
 
-    let result_json = json!({
-        "elapsed": format!("{:.3} s", elapsed_time.as_secs_f64()),
-        "result": *freq_map,
-    });
+    println!("{:<10} {:<20} {:<10}", "PID", "Name", "Running Time (ms)");
+    for (pid, process) in system.processes() {
+        println!("{:<10} {:<20} {:<10}", pid, process.name(), process.run_time());
+    }
 
-    println!("{}", serde_json::to_string_pretty(&result_json).unwrap());
+    Ok(())
+}
+
+fn kill_process(pid: i32) -> io::Result<()> {
+    let mut system = System::new_all();
+    system.refresh_all();
+
+    if let Some(process) = system.process(Pid::from(pid as usize)) {
+        if process.kill() {
+            println!("Process {} killed successfully.", pid);
+        } else {
+            eprintln!("Failed to kill process {}.", pid);
+        }
+    } else {
+        eprintln!("No such process with PID {}.", pid);
+    }
+
+    Ok(())
 }
