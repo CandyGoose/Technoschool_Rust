@@ -1,158 +1,152 @@
-use std::env;
-use std::io::{self, Write, Read};
-use std::process::{Command, Stdio};
-use sysinfo::{Pid, ProcessExt, System, SystemExt};
-use std::process::exit;
+use reqwest::blocking::Client;
+use select::document::Document;
+use select::predicate::Name;
+use std::collections::HashSet;
+use std::fs;
+use std::path::Path;
+use std::time::Duration;
+use url::{Url, ParseError};
+use clap::{Arg, Command};
 
 fn main() {
-    loop {
-        print!("rust-shell> ");
-        io::stdout().flush().unwrap();
+    let matches = Command::new("rust-wget")
+        .arg(Arg::new("url")
+            .short('u')
+            .long("url")
+            .value_name("URL")
+            .help("Specifies the root URL to download")
+            .required(true))
+        .arg(Arg::new("output")
+            .short('o')
+            .long("output")
+            .value_name("DIRECTORY")
+            .help("Specifies the directory where to save the downloaded content")
+            .required(true))
+        .get_matches();
 
-        let mut input = String::new();
-        io::stdin().read_line(&mut input).unwrap();
+    let root_url = matches.get_one::<String>("url").unwrap();
+    let output_dir = matches.get_one::<String>("output").unwrap();
 
-        let input = input.trim();
-        if input.is_empty() {
-            continue;
-        }
 
-        let commands: Vec<&str> = input.split('|').map(str::trim).collect();
-        if commands.len() > 1 {
-            if let Err(e) = handle_pipeline(commands) {
-                eprintln!("Error executing pipeline: {}", e);
-            }
-            continue;
-        }
+    let mut visited_urls = HashSet::new();
 
-        let mut parts = input.split_whitespace();
-        let command = match parts.next() {
-            Some(cmd) => cmd,
-            None => continue,
-        };
-        let args: Vec<&str> = parts.collect();
-
-        match command {
-            "cd" => {
-                if args.len() != 1 {
-                    eprintln!("Usage: cd <directory>");
-                } else {
-                    let path = args[0];
-                    if let Err(e) = env::set_current_dir(path) {
-                        eprintln!("cd: {}", e);
-                    }
-                }
-            }
-            "pwd" => {
-                match env::current_dir() {
-                    Ok(path) => println!("{}", path.display()),
-                    Err(e) => eprintln!("pwd: {}", e),
-                }
-            }
-            "echo" => {
-                println!("{}", args.join(" "));
-            }
-            "ps" => {
-                match ps_command() {
-                    Ok(_) => {}
-                    Err(e) => eprintln!("ps: {}", e),
-                }
-            }
-            "kill" => {
-                if args.len() != 1 {
-                    eprintln!("Usage: kill <pid>");
-                } else if let Ok(pid) = args[0].parse::<i32>() {
-                    match kill_process(pid) {
-                        Ok(_) => println!("Process {} killed", pid),
-                        Err(e) => eprintln!("kill: {}", e),
-                    }
-                } else {
-                    eprintln!("kill: Invalid PID");
-                }
-            }
-            "exit" | "\\quit" => {
-                println!("Exiting...");
-                exit(0);
-            }
-            _ => {
-                if let Err(e) = execute_external_command(command, &args) {
-                    eprintln!("Error executing command: {}", e);
-                }
-            }
-        }
+    if let Err(e) = download_site(root_url, output_dir, &mut visited_urls) {
+        eprintln!("Error downloading site: {}", e);
+    } else {
+        println!("Site downloaded successfully!");
     }
 }
 
-fn execute_external_command(command: &str, args: &[&str]) -> io::Result<()> {
-    let mut child = Command::new(command)
-        .args(args)
-        .spawn()?;
+fn download_site(root_url: &str, output_dir: &str, visited_urls: &mut HashSet<String>) -> Result<(), Box<dyn std::error::Error>> {
+    let client = Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()?;
 
-    child.wait()?;
-    Ok(())
-}
-
-fn handle_pipeline(commands: Vec<&str>) -> io::Result<()> {
-    let mut previous_command = None;
-
-    for (i, command) in commands.iter().enumerate() {
-        let mut parts = command.split_whitespace();
-        let cmd = parts.next().unwrap();
-        let args: Vec<&str> = parts.collect();
-
-        let stdin = if let Some(output) = previous_command {
-            Stdio::from(output)
-        } else {
-            Stdio::inherit()
-        };
-
-        let stdout = if i == commands.len() - 1 {
-            Stdio::inherit()
-        } else {
-            Stdio::piped()
-        };
-
-        let mut child = Command::new(cmd)
-            .args(&args)
-            .stdin(stdin)
-            .stdout(stdout)
-            .spawn()?;
-
-        previous_command = child.stdout.take();
-    }
-
-    if let Some(mut final_output) = previous_command {
-        io::copy(&mut final_output, &mut io::stdout())?;
-    }
+    download_page(&client, root_url, output_dir, visited_urls)?;
 
     Ok(())
 }
 
-fn ps_command() -> io::Result<()> {
-    let mut system = System::new_all();
-    system.refresh_all();
-
-    println!("{:<10} {:<20} {:<10}", "PID", "Name", "Running Time (ms)");
-    for (pid, process) in system.processes() {
-        println!("{:<10} {:<20} {:<10}", pid, process.name(), process.run_time());
+fn download_page(client: &Client, url: &str, output_dir: &str, visited_urls: &mut HashSet<String>) -> Result<(), Box<dyn std::error::Error>> {
+    if visited_urls.contains(url) {
+        return Ok(());
     }
 
-    Ok(())
-}
+    visited_urls.insert(url.to_string());
 
-fn kill_process(pid: i32) -> io::Result<()> {
-    let mut system = System::new_all();
-    system.refresh_all();
+    // Загружаем страницу
+    println!("Downloading: {}", url);
+    let response = client.get(url).send()?;
 
-    if let Some(process) = system.process(Pid::from(pid as usize)) {
-        if process.kill() {
-            println!("Process {} killed successfully.", pid);
-        } else {
-            eprintln!("Failed to kill process {}.", pid);
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("");
+
+    if content_type.contains("text/html") {
+        let html_text = response.text()?;
+        let document = Document::from(html_text.as_str());
+
+        let parsed_url = Url::parse(url)?;
+        let local_path = url_to_local_path(&parsed_url, output_dir)?;
+        save_file(&local_path, html_text.as_bytes())?;
+
+        for node in document.find(Name("a")).filter_map(|n| n.attr("href")) {
+            if let Ok(new_url) = resolve_url(&parsed_url, node) {
+                download_page(client, new_url.as_str(), output_dir, visited_urls)?;
+            }
+        }
+
+        for node in document.find(Name("img")).filter_map(|n| n.attr("src")) {
+            if let Ok(new_url) = resolve_url(&parsed_url, node) {
+                download_resource(client, new_url.as_str(), output_dir, visited_urls)?;
+            }
+        }
+
+        for node in document.find(Name("link")).filter_map(|n| n.attr("href")) {
+            if let Ok(new_url) = resolve_url(&parsed_url, node) {
+                download_resource(client, new_url.as_str(), output_dir, visited_urls)?;
+            }
+        }
+
+        for node in document.find(Name("script")).filter_map(|n| n.attr("src")) {
+            if let Ok(new_url) = resolve_url(&parsed_url, node) {
+                download_resource(client, new_url.as_str(), output_dir, visited_urls)?;
+            }
         }
     } else {
-        eprintln!("No such process with PID {}.", pid);
+        download_resource(client, url, output_dir, visited_urls)?;
     }
 
     Ok(())
+}
+
+fn download_resource(client: &Client, url: &str, output_dir: &str, visited_urls: &mut HashSet<String>) -> Result<(), Box<dyn std::error::Error>> {
+    if visited_urls.contains(url) {
+        return Ok(());
+    }
+
+    visited_urls.insert(url.to_string());
+
+    println!("Downloading resource: {}", url);
+    let response = client.get(url).send()?.bytes()?;
+
+    let parsed_url = Url::parse(url)?;
+    let local_path = url_to_local_path(&parsed_url, output_dir)?;
+    save_file(&local_path, &response)?;
+
+    Ok(())
+}
+
+fn url_to_local_path(url: &Url, output_dir: &str) -> Result<std::path::PathBuf, ParseError> {
+    let mut path = Path::new(output_dir).join(url.host_str().unwrap_or("unknown"));
+
+    for segment in url.path_segments().map(|c| c.collect::<Vec<_>>()).unwrap_or_else(Vec::new) {
+        path = path.join(segment);
+    }
+
+    if path.extension().is_none() {
+        path = path.with_extension("html");
+    }
+
+    Ok(path)
+}
+
+fn save_file(path: &Path, content: &[u8]) -> Result<(), std::io::Error> {
+    if path.exists() {
+        println!("File already exists, skipping: {:?}", path);
+        return Ok(());
+    }
+
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    fs::write(path, content)?;
+    Ok(())
+}
+
+fn resolve_url(base_url: &Url, href: &str) -> Result<Url, ParseError> {
+    base_url.join(href)
 }
